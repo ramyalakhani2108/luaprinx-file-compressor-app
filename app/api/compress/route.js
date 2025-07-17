@@ -9,49 +9,52 @@ import archiver from "archiver";
 import extract from "extract-zip";
 import { spawn } from "child_process";
 import { NextResponse } from "next/server";
-const ffmpegPath = eval("require('ffmpeg-static')");
+const ffmpegPath = (await import('ffmpeg-static')).default;
+
+// Use Vercel-compatible temp directory
+const tempRoot = os.tmpdir();
 
 async function compressVideo(inputPath, outputPath) {
-    return new Promise((resolve, reject) => {
-        const ffmpeg = spawn(ffmpegPath, [
-            "-i",
-            inputPath,
-            "-vcodec",
-            "libx264",
-            "-crf",
-            "28",
-            "-preset",
-            "fast",
-            "-acodec",
-            "aac",
-            "-b:a",
-            "128k",
-            outputPath,
-        ]);
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn(ffmpegPath, [
+      "-i",
+      inputPath,
+      "-vcodec",
+      "libx264",
+      "-crf",
+      "28",
+      "-preset",
+      "fast",
+      "-acodec",
+      "aac",
+      "-b:a",
+      "128k",
+      outputPath,
+    ]);
 
-        ffmpeg.stderr.on("data", (data) => {
-            console.error(`ffmpeg stderr: ${data}`);
-        });
-
-        ffmpeg.on("error", async (err) => {
-            if (err.code === "ENOENT") {
-                console.error("ffmpeg not found. Skipping compression.");
-                try {
-                    await copyFile(inputPath, outputPath);
-                    resolve();
-                } catch (copyErr) {
-                    reject(copyErr);
-                }
-            } else {
-                reject(err);
-            }
-        });
-
-        ffmpeg.on("close", (code) => {
-            if (code === 0) resolve();
-            else reject(new Error(`FFmpeg exited with code ${code}`));
-        });
+    ffmpeg.stderr.on("data", (data) => {
+      console.error(`ffmpeg stderr: ${data}`);
     });
+
+    ffmpeg.on("error", async (err) => {
+      if (err.code === "ENOENT") {
+        console.error("ffmpeg not found. Skipping compression.");
+        try {
+          await copyFile(inputPath, outputPath);
+          resolve();
+        } catch (copyErr) {
+          reject(copyErr);
+        }
+      } else {
+        reject(err);
+      }
+    });
+
+    ffmpeg.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg exited with code ${code}`));
+    });
+  });
 }
 
 
@@ -65,8 +68,8 @@ export async function POST(req) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const extension = file.name.split(".").pop()?.toLowerCase() || "";
-    const tempRoot = path.join(process.cwd(), "temp");
-
+    // const tempRoot = path.join(process.cwd(), "temp");
+    const tempRoot = os.tmpdir();
     if (!existsSync(tempRoot)) mkdirSync(tempRoot);
 
     let finalBuffer;
