@@ -2,13 +2,15 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import imageCompression from "browser-image-compression";
+import { PDFDocument } from "pdf-lib";
+import JSZip from "jszip";
 
 export default function Home() {
   const [file, setFile] = useState(null);
   const [compressedFile, setCompressedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -57,48 +59,116 @@ export default function Home() {
     setError(null);
   };
 
+  // Client-side image compression
+  const compressImage = async (imageFile) => {
+    const options = {
+      maxSizeMB: 1,
+      maxWidthOrHeight: 1920,
+      useWebWorker: true,
+    };
+
+    try {
+      return await imageCompression(imageFile, options);
+    } catch (error) {
+      console.error("Image compression error:", error);
+      throw new Error("Failed to compress image");
+    }
+  };
+
+  // Client-side PDF compression
+  const compressPDF = async (pdfFile) => {
+    try {
+      const arrayBuffer = await pdfFile.arrayBuffer();
+      const pdfDoc = await PDFDocument.load(arrayBuffer);
+      const pages = pdfDoc.getPages();
+
+      // Simple compression by reducing image quality
+      for (const page of pages) {
+        const images = await page.node.getImageDictionary();
+        if (images) {
+          for (const [name, image] of Object.entries(images)) {
+            const imageBytes = await image.getImageBytes();
+            try {
+              const compressedImage = await imageCompression(
+                new Blob([imageBytes], { type: "image/jpeg" }),
+                { maxSizeMB: 0.5, maxWidthOrHeight: 1200 }
+              );
+              const compressedBytes = await compressedImage.arrayBuffer();
+              await image.setImageBytes(compressedBytes);
+            } catch (e) {
+              console.warn("Failed to compress PDF image:", e);
+            }
+          }
+        }
+      }
+
+      const compressedPdfBytes = await pdfDoc.save();
+      return new Blob([compressedPdfBytes], { type: "application/pdf" });
+    } catch (error) {
+      console.error("PDF compression error:", error);
+      throw new Error("Failed to compress PDF");
+    }
+  };
+
+  // Client-side ZIP compression
+  const compressZip = async (zipFile) => {
+    try {
+      const zip = new JSZip();
+      const newZip = new JSZip();
+      
+      // Load existing zip
+      const contents = await zip.loadAsync(await zipFile.arrayBuffer());
+      
+      // Recompress all files
+      for (const [relativePath, zipEntry] of Object.entries(contents.files)) {
+        if (!zipEntry.dir) {
+          const fileData = await zipEntry.async("uint8array");
+          newZip.file(relativePath, fileData, { compression: "DEFLATE" });
+        }
+      }
+      
+      const compressedBlob = await newZip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 9 }
+      });
+      
+      return compressedBlob;
+    } catch (error) {
+      console.error("ZIP compression error:", error);
+      throw new Error("Failed to compress archive");
+    }
+  };
+
   const handleCompress = async () => {
     if (!file) return;
     setLoading(true);
     setCompressedFile(null);
     setError(null);
-    setProgress(0);
-
-    // Simulate progress for demo
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 90) {
-          clearInterval(progressInterval);
-          return prev;
-        }
-        return prev + 10;
-      });
-    }, 200);
-
-    const formData = new FormData();
-    formData.append("file", file);
 
     try {
-      const res = await fetch("/api/compress", {
-        method: "POST",
-        body: formData,
-      });
+      const extension = file.name.split(".").pop().toLowerCase();
+      let compressedBlob;
 
-      clearInterval(progressInterval);
-      setProgress(100);
-
-      if (!res.ok) {
-        throw new Error(`Server responded with ${res.status}`);
+      if (["jpg", "jpeg", "png", "webp", "gif"].includes(extension)) {
+        compressedBlob = await compressImage(file);
+      } 
+      else if (extension === "pdf") {
+        compressedBlob = await compressPDF(file);
+      } 
+      else if (["zip", "rar", "7z"].includes(extension)) {
+        compressedBlob = await compressZip(file);
+      } 
+      else {
+        throw new Error("Unsupported file type");
       }
 
-      const blob = await res.blob();
-      setCompressedFile(blob);
+      setCompressedFile(compressedBlob);
     } catch (error) {
       console.error("Compression error:", error);
-      setError("Failed to compress file. Please try again.");
+      setError(error.message || "Failed to compress file. Please try again.");
     } finally {
       setLoading(false);
-      setTimeout(() => setProgress(0), 1000);
     }
   };
 
@@ -125,10 +195,6 @@ export default function Home() {
       png: "🖼️",
       webp: "🖼️",
       gif: "🖼️",
-      mp4: "🎬",
-      mov: "🎬",
-      mkv: "🎬",
-      avi: "🎬",
       pdf: "📄",
       zip: "📦",
       rar: "📦",
@@ -146,7 +212,6 @@ export default function Home() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
-  // Calculate savings percentage safely
   const getSavingsPercentage = () => {
     if (!file || !compressedFile) return 0;
     return Math.max(0, Math.round((file.size - compressedFile.size) / file.size * 100));
@@ -168,7 +233,7 @@ export default function Home() {
             </h1>
           </div>
           <p className="text-gray-600 text-center max-w-lg">
-            Reduce file sizes without losing quality. Professional compression for images, videos, PDFs and archives.
+            Reduce file sizes without losing quality. Professional compression for images, PDFs and archives.
           </p>
         </div>
       </div>
@@ -195,7 +260,7 @@ export default function Home() {
                 ref={fileInputRef} 
                 onChange={handleFileChange} 
                 className="hidden"
-                accept="image/*,video/*,application/pdf,application/zip,application/x-rar-compressed,application/x-7z-compressed"
+                accept="image/*,application/pdf,application/zip,application/x-rar-compressed,application/x-7z-compressed"
               />
               
               <div className="flex justify-center mb-4">
@@ -213,7 +278,7 @@ export default function Home() {
                 or <span className="text-indigo-600 font-medium">browse files</span>
               </p>
               <p className="text-sm text-gray-400">
-                Supports: JPG, PNG, GIF, MP4, MOV, PDF, ZIP, RAR, 7Z (Max: 200MB)
+                Supports: JPG, PNG, GIF, PDF, ZIP, RAR, 7Z (Max: 50MB)
               </p>
             </div>
             
@@ -241,22 +306,6 @@ export default function Home() {
                       </svg>
                     </button>
                   </div>
-                </div>
-              </div>
-            )}
-            
-            {/* Progress Bar */}
-            {loading && (
-              <div className="mt-6">
-                <div className="flex justify-between text-sm text-gray-600 mb-1">
-                  <span>Compressing with Luparinx technology...</span>
-                  <span>{progress}%</span>
-                </div>
-                <div className="h-2.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-300 ease-out" 
-                    style={{ width: `${progress}%` }}
-                  ></div>
                 </div>
               </div>
             )}
@@ -347,7 +396,7 @@ export default function Home() {
           </div>
           
           <div className="bg-indigo-50 px-8 py-4 text-center text-sm text-indigo-700 border-t border-indigo-100">
-            <p>All files are processed securely and never stored on our servers. Powered by Luparinx technology.</p>
+            <p>All files are processed securely in your browser and never uploaded to any server. Powered by Luparinx technology.</p>
           </div>
         </div>
         
@@ -361,14 +410,9 @@ export default function Home() {
               <p className="text-sm text-gray-600">JPG, PNG, WEBP, GIF</p>
             </div>
             <div className="bg-white rounded-xl p-5 text-center shadow-sm hover:shadow-md transition-shadow border border-gray-100">
-              <div className="text-3xl mb-3 text-indigo-600">🎬</div>
-              <h3 className="font-bold text-gray-800 mb-1">Videos</h3>
-              <p className="text-sm text-gray-600">MP4, MOV, MKV, AVI</p>
-            </div>
-            <div className="bg-white rounded-xl p-5 text-center shadow-sm hover:shadow-md transition-shadow border border-gray-100">
               <div className="text-3xl mb-3 text-indigo-600">📄</div>
               <h3 className="font-bold text-gray-800 mb-1">Documents</h3>
-              <p className="text-sm text-gray-600">PDF, DOC, DOCX</p>
+              <p className="text-sm text-gray-600">PDF</p>
             </div>
             <div className="bg-white rounded-xl p-5 text-center shadow-sm hover:shadow-md transition-shadow border border-gray-100">
               <div className="text-3xl mb-3 text-indigo-600">📦</div>
@@ -389,7 +433,7 @@ export default function Home() {
                 </svg>
               </div>
               <h3 className="font-bold text-lg text-gray-800 mb-2">Secure Processing</h3>
-              <p className="text-gray-600">Files are processed locally and never uploaded to any server. Your privacy is our priority.</p>
+              <p className="text-gray-600">Files are processed locally in your browser and never leave your device.</p>
             </div>
             <div className="bg-white p-5 rounded-xl shadow-sm border border-indigo-100">
               <div className="bg-indigo-100 w-12 h-12 rounded-lg flex items-center justify-center mb-4">
@@ -407,7 +451,7 @@ export default function Home() {
                 </svg>
               </div>
               <h3 className="font-bold text-lg text-gray-800 mb-2">All-in-One Solution</h3>
-              <p className="text-gray-600">Compress images, videos, documents and archives with a single tool.</p>
+              <p className="text-gray-600">Compress images, documents and archives with a single tool.</p>
             </div>
           </div>
         </div>
