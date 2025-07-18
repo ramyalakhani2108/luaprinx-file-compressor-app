@@ -1,7 +1,7 @@
 {
     "functions": {
       "app/api/compress/route.js": {
-        "maxDuration": 500
+        "maxDuration": 300
       }
     }
   }
